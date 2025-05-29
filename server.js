@@ -56,35 +56,84 @@ app.get('/webhook', (req, res) => {
 // Main webhook handler
 app.post('/webhook', async (req, res) => {
   try {
+    console.log('Received webhook call:', JSON.stringify(req.body, null, 2));
     const body = req.body;
+    
+    // Always return 200 immediately to acknowledge receipt
+    res.status(200).send('EVENT_RECEIVED');
+    
     if (body.object === 'whatsapp_business_account') {
-      body.entry.forEach(async (entry) => {
-        const changes = entry.changes;
-        changes.forEach(async (change) => {
+      console.log('Processing WhatsApp Business Account webhook');
+      
+      if (!body.entry || body.entry.length === 0) {
+        console.log('No entries in webhook, ignoring');
+        return;
+      }
+      
+      for (const entry of body.entry) {
+        if (!entry.changes || entry.changes.length === 0) {
+          console.log('No changes in entry, ignoring');
+          continue;
+        }
+        
+        for (const change of entry.changes) {
           if (change.field === 'messages') {
-            const messages = change.value.messages;
-            if (messages) {
-              for (const message of messages) {
-                if (message.type === 'text') {
-                  const userMessage = message.text.body;
-                  const fromNumber = message.from;
+            console.log('Processing messages field in webhook');
+            
+            const value = change.value;
+            if (!value || !value.messages || value.messages.length === 0) {
+              console.log('No messages in value, ignoring');
+              continue;
+            }
+            
+            console.log(`Found ${value.messages.length} message(s) to process`);
+            
+            for (const message of value.messages) {
+              if (message.type === 'text') {
+                console.log('Processing text message:', message.text.body);
+                const userMessage = message.text.body;
+                const fromNumber = message.from;
+                
+                console.log(`Message from ${fromNumber}: ${userMessage}`);
+                
+                try {
                   // Get AI response
+                  console.log('Getting Gemini response...');
                   const aiResponse = await getGeminiResponse(userMessage);
+                  console.log('Gemini response:', JSON.stringify(aiResponse));
+                  
                   // Send response back via WhatsApp Business API
-                  await sendWhatsAppMessage(fromNumber, aiResponse.reply || aiResponse);
-                  // Handle actions/intents if you want to add integrations (calendar, etc.)
-                  // aiResponse.action, aiResponse.params available here
+                  const replyText = aiResponse.reply || aiResponse;
+                  console.log(`Sending reply to ${fromNumber}: ${replyText}`);
+                  const sendResult = await sendWhatsAppMessage(fromNumber, replyText);
+                  
+                  if (sendResult.success) {
+                    console.log('Reply sent successfully!');
+                  } else {
+                    console.error('Failed to send reply:', sendResult.error);
+                  }
+                  
+                  // Handle actions/intents if you want to add integrations
+                  if (aiResponse.action && aiResponse.action !== 'none') {
+                    console.log(`Processing action: ${aiResponse.action}`, aiResponse.params);
+                    // Here you would add code to execute the action
+                  }
+                } catch (messageError) {
+                  console.error('Error processing message:', messageError);
                 }
+              } else {
+                console.log(`Ignoring non-text message of type: ${message.type}`);
               }
             }
           }
-        });
-      });
+        }
+      }
+    } else {
+      console.log(`Ignoring webhook for non-WhatsApp object: ${body.object}`);
     }
-    res.status(200).send('EVENT_RECEIVED');
   } catch (error) {
     console.error('Webhook error:', error);
-    res.status(500).send('Internal Server Error');
+    // We already sent a 200 response, so no need to respond again
   }
 });
 
@@ -168,9 +217,9 @@ async function getGeminiResponse(userMessage) {
   
   // If API key is provided, use the actual Gemini API
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" }); // Using 1.5 which is publicly available
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Using the publicly available Gemini 2.0 Flash model
     const prompt = `
-You are a helpful WhatsApp personal assistant powered by Gemini 2.5. Analyze the user's message and respond with:
+You are a helpful WhatsApp personal assistant powered by Gemini 2.0. Analyze the user's message and respond with:
 - a natural, conversational reply
 - a structured "action" and "params" for integrations and automations
 
@@ -213,14 +262,26 @@ async function sendWhatsAppMessage(to, message) {
     console.log('WhatsApp Business API not configured');
     return;
   }
+  
+  console.log('Attempting to send WhatsApp message to:', to);
+  console.log('Message content:', message);
+  
   try {
+    // Make sure phone number is in the correct format (should start with country code, no + symbol)
+    const formattedNumber = to.startsWith('+') ? to.substring(1) : to;
+    
+    const payload = {
+      messaging_product: 'whatsapp',
+      to: formattedNumber,
+      text: { body: message }
+    };
+    
+    console.log('Request payload:', JSON.stringify(payload));
+    console.log('Using Phone ID:', WHATSAPP_PHONE_ID);
+    
     const response = await axios.post(
       `https://graph.facebook.com/v17.0/${WHATSAPP_PHONE_ID}/messages`,
-      {
-        messaging_product: 'whatsapp',
-        to: to,
-        text: { body: message }
-      },
+      payload,
       {
         headers: {
           'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
@@ -228,9 +289,29 @@ async function sendWhatsAppMessage(to, message) {
         }
       }
     );
-    console.log('Message sent:', response.data);
+    
+    console.log('Message sent successfully! Response:', JSON.stringify(response.data));
+    return { success: true, data: response.data };
   } catch (error) {
-    console.error('Error sending WhatsApp message:', error.response?.data || error.message);
+    console.error('Error sending WhatsApp message:');
+    if (error.response) {
+      console.error('Response error data:', JSON.stringify(error.response.data));
+      console.error('Response status:', error.response.status);
+      
+      // Handle specific WhatsApp error codes
+      const errorCode = error.response.data?.error?.code;
+      const errorMessage = error.response.data?.error?.message;
+      
+      if (errorCode === 131030) {
+        console.error('CRITICAL ERROR: The recipient phone number is not in the allowed list. You must add this number to your test recipients in the Meta Developer Dashboard.');
+      } else if (errorCode === 10) {
+        console.error('CRITICAL ERROR: Your app does not have the proper permissions or your access token is invalid/expired.');
+      }
+    } else {
+      console.error('Error details:', error.message);
+    }
+    
+    return { success: false, error: error.response?.data || error.message };
   }
 }
 
@@ -419,10 +500,11 @@ async function executeAction(action, params) {
 
 app.listen(PORT, () => {
   console.log(`🚀 WhatsApp Gemini Bot running on port ${PORT}`);
-  console.log(`🤖 Gemini AI: 1.5 Pro Enabled`);
+  console.log(`🤖 Gemini AI: 2.0 Flash Enabled`);
   console.log(`🧪 Test UI available at: http://localhost:${PORT}/test-chat`);
   console.log(`📝 API Documentation:`);
   console.log(`   - POST /test-ai - Test AI responses`);
   console.log(`   - POST /test-webhook - Simulate WhatsApp webhook`);
   console.log(`   - GET /test-chat - Interactive chat UI for testing`);
 });
+
