@@ -3,9 +3,13 @@ const cors = require('cors');
 const helmet = require('helmet');
 const axios = require('axios');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const dotenv = require('dotenv');
+
+// Load environment variables from .env file
+dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001; // Changed to 3001 to avoid conflicts
 
 // Environment variables
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -13,7 +17,13 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_PHONE_ID = process.env.WHATSAPP_PHONE_ID;
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || 'your_verify_token';
 
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+// For local testing, we'll create a mock Gemini client if no API key is provided
+let genAI;
+if (GEMINI_API_KEY) {
+  genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+} else {
+  console.warn('⚠️ No GEMINI_API_KEY provided. Using mock responses for local testing.');
+}
 
 app.use(helmet());
 app.use(cors());
@@ -80,19 +90,105 @@ app.post('/webhook', async (req, res) => {
 
 // Gemini AI response function (returns reply AND action/params for integrations)
 async function getGeminiResponse(userMessage) {
+  // If no API key is provided, return mock responses for testing
+  if (!GEMINI_API_KEY) {
+    console.log('Using mock response for message:', userMessage);
+    
+    // Simple pattern matching for testing automation features
+    if (userMessage.toLowerCase().includes('reminder')) {
+      return {
+        reply: "I've set a reminder for you as requested.",
+        action: "reminder.add",
+        params: {
+          text: "Example reminder",
+          date: new Date().toISOString().split('T')[0],
+          time: "12:00",
+          priority: "normal"
+        }
+      };
+    } else if (userMessage.toLowerCase().includes('email')) {
+      return {
+        reply: "I'll draft that email for you right away.",
+        action: "email.send",
+        params: {
+          to: "recipient@example.com",
+          subject: "Example Subject",
+          body: "This is a test email body.",
+          cc: "",
+          bcc: ""
+        }
+      };
+    } else if (userMessage.toLowerCase().includes('weather')) {
+      return {
+        reply: "Here's the current weather information.",
+        action: "weather.get",
+        params: {
+          location: "New York",
+          units: "imperial"
+        }
+      };
+    } else if (userMessage.toLowerCase().includes('note')) {
+      return {
+        reply: "I've created a note with that information.",
+        action: "notes.create",
+        params: {
+          title: "Example Note",
+          content: "This is the content of your note.",
+          tags: ["test", "example"]
+        }
+      };
+    } else if (userMessage.toLowerCase().includes('calendar') || userMessage.toLowerCase().includes('schedule') || userMessage.toLowerCase().includes('meeting')) {
+      return {
+        reply: "I've added that event to your calendar.",
+        action: "calendar.add",
+        params: {
+          title: "Test Meeting",
+          date: new Date().toISOString().split('T')[0],
+          time: "15:00",
+          description: "This is a test calendar event."
+        }
+      };
+    } else if (userMessage.toLowerCase().includes('search')) {
+      return {
+        reply: "Here are some search results for you.",
+        action: "search.web",
+        params: {
+          query: userMessage.replace(/search/gi, "").trim() || "example search",
+          limit: 5
+        }
+      };
+    } else {
+      return {
+        reply: "Hello! This is a mock response since you're running in test mode without an API key. Try asking about reminders, emails, weather, notes, calendar, or search to see different automation examples.",
+        action: "none",
+        params: {}
+      };
+    }
+  }
+  
+  // If API key is provided, use the actual Gemini API
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
     const prompt = `
-You are a WhatsApp personal assistant. Analyze the user's message and respond with:
-- a natural reply
-- a structured "action" and "params" for possible integrations (calendar.add, notes.create, reminder.add, email.send, or none)
+You are a helpful WhatsApp personal assistant powered by Gemini 2.5. Analyze the user's message and respond with:
+- a natural, conversational reply
+- a structured "action" and "params" for integrations and automations
+
+Available actions:
+1. calendar.add - Add calendar events (params: title, date, time, description)
+2. notes.create - Create notes (params: title, content, tags)
+3. reminder.add - Set reminders (params: text, date, time, priority)
+4. email.send - Send emails (params: to, subject, body, cc, bcc)
+5. weather.get - Get weather information (params: location, units)
+6. search.web - Search the web (params: query, limit)
+7. none - No action required
 
 User message: "${userMessage}"
 
 Respond ONLY in JSON:
 {
-  "reply": "Your response to the user",
-  "action": "calendar.add|notes.create|reminder.add|email.send|none",
+  "reply": "Your conversational response to the user",
+  "action": "calendar.add|notes.create|reminder.add|email.send|weather.get|search.web|none",
   "params": { }
 }
     `;
@@ -138,7 +234,8 @@ async function sendWhatsAppMessage(to, message) {
   }
 }
 
-// Test endpoint (local dev only)
+// Enhanced test endpoints for local development
+// Test AI endpoint
 app.post('/test-ai', async (req, res) => {
   try {
     const { message } = req.body;
@@ -149,13 +246,183 @@ app.post('/test-ai', async (req, res) => {
   }
 });
 
+// Chat UI for easy testing (local dev only)
+app.get('/test-chat', (req, res) => {
+  res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WhatsApp Gemini Bot Tester</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+    #chat-container { height: 400px; border: 1px solid #ccc; overflow-y: auto; padding: 10px; margin-bottom: 10px; border-radius: 5px; }
+    #message-form { display: flex; }
+    #message-input { flex-grow: 1; padding: 10px; border: 1px solid #ccc; border-radius: 5px; margin-right: 10px; }
+    button { background: #25D366; color: white; border: none; padding: 10px 15px; border-radius: 5px; cursor: pointer; }
+    .message { margin-bottom: 10px; padding: 8px 12px; border-radius: 5px; max-width: 70%; }
+    .user-message { background-color: #DCF8C6; align-self: flex-end; margin-left: auto; }
+    .bot-message { background-color: #f1f1f1; }
+    .message-container { display: flex; flex-direction: column; }
+    .action-box { background-color: #E7F3FF; padding: 10px; border-radius: 5px; margin-top: 5px; font-size: 0.9em; }
+    h1 { color: #128C7E; }
+  </style>
+</head>
+<body>
+  <h1>WhatsApp Gemini Bot Tester</h1>
+  <div id="chat-container"></div>
+  <form id="message-form">
+    <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off">
+    <button type="submit">Send</button>
+  </form>
+
+  <script>
+    const chatContainer = document.getElementById('chat-container');
+    const messageForm = document.getElementById('message-form');
+    const messageInput = document.getElementById('message-input');
+
+    messageForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const message = messageInput.value.trim();
+      if (!message) return;
+
+      // Add user message to chat
+      addMessage(message, 'user');
+      messageInput.value = '';
+
+      try {
+        // Send message to server
+        const response = await fetch('/test-ai', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message })
+        });
+
+        const data = await response.json();
+
+        // Add bot response to chat
+        addMessage(data.reply, 'bot', data.action, data.params);
+      } catch (error) {
+        console.error('Error:', error);
+        addMessage('Sorry, something went wrong', 'bot');
+      }
+    });
+
+    function addMessage(text, sender, action = 'none', params = {}) {
+      const messageContainer = document.createElement('div');
+      messageContainer.className = 'message-container';
+
+      const messageElement = document.createElement('div');
+      messageElement.className = 'message ' + sender + '-message';
+      messageElement.textContent = text;
+
+      messageContainer.appendChild(messageElement);
+
+      // Add action info if it's not 'none'
+      if (sender === 'bot' && action !== 'none') {
+        const actionBox = document.createElement('div');
+        actionBox.className = 'action-box';
+        actionBox.innerHTML = '<strong>Action:</strong> ' + action + '<br><strong>Params:</strong> ' + JSON.stringify(params);
+        messageContainer.appendChild(actionBox);
+      }
+
+      chatContainer.appendChild(messageContainer);
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    // Add welcome message
+    addMessage('Welcome! I\'m your WhatsApp Gemini Bot. How can I help you today?', 'bot');
+  </script>
+</body>
+</html>
+  `);
+});
+
+// Fake webhook simulator for testing without actual WhatsApp integration
+app.post('/test-webhook', async (req, res) => {
+  try {
+    const { message, phone = '123456789' } = req.body;
+    
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+    
+    // Get AI response
+    const aiResponse = await getGeminiResponse(message);
+    
+    // Log the response that would be sent to WhatsApp
+    console.log('Simulated WhatsApp message to:', phone);
+    console.log('Bot response:', aiResponse.reply);
+    console.log('Action:', aiResponse.action);
+    console.log('Params:', aiResponse.params);
+    
+    res.json({
+      success: true,
+      response: aiResponse,
+      simulation: {
+        to: phone,
+        timestamp: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    console.error('Test webhook error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   res.status(500).json({ error: 'Something went wrong!', message: err.message });
 });
 
+// Add handling for automation actions (for future implementation)
+async function executeAction(action, params) {
+  console.log(`Executing action: ${action}`);
+  console.log('With params:', params);
+  
+  // This is where you would implement the actual automation logic
+  // For example, sending emails, creating calendar events, etc.
+  switch(action) {
+    case 'email.send':
+      // Implement email sending functionality
+      return { success: true, message: 'Email would be sent (not actually implemented yet)' };
+    
+    case 'calendar.add':
+      // Implement calendar event creation
+      return { success: true, message: 'Calendar event would be created (not actually implemented yet)' };
+    
+    case 'reminder.add':
+      // Implement reminder creation
+      return { success: true, message: 'Reminder would be set (not actually implemented yet)' };
+    
+    case 'notes.create':
+      // Implement note creation
+      return { success: true, message: 'Note would be created (not actually implemented yet)' };
+    
+    case 'weather.get':
+      // Implement weather information retrieval
+      return { success: true, message: 'Weather information would be retrieved (not actually implemented yet)' };
+    
+    case 'search.web':
+      // Implement web search
+      return { success: true, message: 'Web search would be performed (not actually implemented yet)' };
+    
+    case 'none':
+      return { success: true, message: 'No action needed' };
+    
+    default:
+      return { success: false, message: `Unknown action: ${action}` };
+  }
+}
+
 app.listen(PORT, () => {
   console.log(`🚀 WhatsApp Gemini Bot running on port ${PORT}`);
-  console.log(`🤖 Gemini AI: Enabled`);
+  console.log(`🤖 Gemini AI: 2.5 Pro Enabled`);
+  console.log(`🧪 Test UI available at: http://localhost:${PORT}/test-chat`);
+  console.log(`📝 API Documentation:`);
+  console.log(`   - POST /test-ai - Test AI responses`);
+  console.log(`   - POST /test-webhook - Simulate WhatsApp webhook`);
+  console.log(`   - GET /test-chat - Interactive chat UI for testing`);
 });
