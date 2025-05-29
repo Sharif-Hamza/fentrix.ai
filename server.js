@@ -487,7 +487,10 @@ app.use((err, req, res, next) => {
 });
 
 // Add handling for automation actions (for future implementation)
-const N8N_EMAIL_WEBHOOK = 'https://areenxo.app.n8n.cloud/webhook/whatsapp-email';
+const N8N_EMAIL_WEBHOOK = 'https://areenxo.app.n8n.cloud/webhook-test/whatsapp-email';
+
+// Store conversation states for users
+const userConversationStates = {};
 
 async function executeAction(action, params, userMessage, fromNumber) {
   console.log(`Executing action: ${action}`);
@@ -538,11 +541,35 @@ async function handleCommandBasedIntegration(message, fromNumber) {
   console.log(`Processing command: ${command}`);
   console.log(`Command content: ${content}`);
   
+  // Handle conversation states
+  if (userConversationStates[fromNumber]) {
+    const conversationState = userConversationStates[fromNumber];
+    
+    // Check if user is in the middle of an email conversation flow
+    if (conversationState.flow === 'email') {
+      return await continueEmailFlow(message, fromNumber, conversationState);
+    }
+  }
+  
+  // Handle new commands
   switch(command) {
     case '/email':
-      // Parse email content: /email to:recipient@example.com subject:Test body:This is a test
-      const emailParams = parseEmailCommand(content);
-      return await sendEmailViaN8n(emailParams, fromNumber);
+      // Initialize email conversation flow
+      userConversationStates[fromNumber] = {
+        flow: 'email',
+        step: 'recipient',
+        data: {
+          to: '',
+          subject: '',
+          body: ''
+        },
+        timestamp: Date.now()
+      };
+      
+      return { 
+        success: true, 
+        message: "Please enter recipient's email address:" 
+      };
       
     // Add other commands here as needed
     default:
@@ -550,6 +577,71 @@ async function handleCommandBasedIntegration(message, fromNumber) {
   }
 }
 
+// Handle the conversation flow for collecting email info
+async function continueEmailFlow(message, fromNumber, state) {
+  console.log(`Continuing email flow, current step: ${state.step}`);
+  
+  // Expire conversation states after 10 minutes of inactivity
+  const expirationTime = 10 * 60 * 1000; // 10 minutes in milliseconds
+  if (Date.now() - state.timestamp > expirationTime) {
+    delete userConversationStates[fromNumber];
+    return { success: false, message: "Your email session has expired. Please start again with /email" };
+  }
+  
+  // Update timestamp to keep conversation fresh
+  state.timestamp = Date.now();
+  
+  // Handle different steps of the email flow
+  switch(state.step) {
+    case 'recipient':
+      state.data.to = message.trim();
+      state.step = 'subject';
+      return { success: true, message: "Great! Now please enter the subject line:" };
+      
+    case 'subject':
+      state.data.subject = message.trim();
+      state.step = 'body';
+      return { success: true, message: "Perfect! Now type the email body:" };
+      
+    case 'body':
+      state.data.body = message.trim();
+      state.step = 'confirmation';
+      
+      // Show confirmation
+      return { 
+        success: true, 
+        message: `Here's your email:\n\nTo: ${state.data.to}\nSubject: ${state.data.subject}\n\n${state.data.body}\n\nType 'send' to send it or 'cancel' to abort.` 
+      };
+      
+    case 'confirmation':
+      if (message.toLowerCase() === 'send') {
+        // Send the email
+        const result = await sendEmailViaN8n(state.data, fromNumber);
+        
+        // Clear the conversation state
+        delete userConversationStates[fromNumber];
+        
+        return result;
+      } else if (message.toLowerCase() === 'cancel') {
+        // Clear the conversation state
+        delete userConversationStates[fromNumber];
+        
+        return { success: false, message: "Email cancelled." };
+      } else {
+        return { 
+          success: false, 
+          message: "I didn't understand. Type 'send' to send the email or 'cancel' to abort."
+        };
+      }
+      
+    default:
+      // Invalid state, reset
+      delete userConversationStates[fromNumber];
+      return { success: false, message: "Something went wrong with your email. Please try again with /email" };
+  }
+}
+
+// Legacy function for one-line email parsing (keeping for reference)
 function parseEmailCommand(content) {
   const params = { to: '', subject: '', body: '' };
   
@@ -612,6 +704,7 @@ app.listen(PORT, () => {
   console.log(`   - POST /test-webhook - Simulate WhatsApp webhook`);
   console.log(`   - GET /test-chat - Interactive chat UI for testing`);
 });
+
 
 
 
