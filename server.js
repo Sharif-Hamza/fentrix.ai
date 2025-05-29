@@ -168,7 +168,7 @@ async function getGeminiResponse(userMessage) {
   
   // If API key is provided, use the actual Gemini API
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" }); // Using 1.5 which is publicly available
     const prompt = `
 You are a helpful WhatsApp personal assistant powered by Gemini 2.5. Analyze the user's message and respond with:
 - a natural, conversational reply
@@ -419,7 +419,7 @@ async function executeAction(action, params) {
 
 app.listen(PORT, () => {
   console.log(`🚀 WhatsApp Gemini Bot running on port ${PORT}`);
-  console.log(`🤖 Gemini AI: 2.5 Pro Enabled`);
+  console.log(`🤖 Gemini AI: 1.5 Pro Enabled`);
   console.log(`🧪 Test UI available at: http://localhost:${PORT}/test-chat`);
   console.log(`📝 API Documentation:`);
   console.log(`   - POST /test-ai - Test AI responses`);
