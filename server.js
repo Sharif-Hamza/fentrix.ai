@@ -103,8 +103,22 @@ app.post('/webhook', async (req, res) => {
                 console.log(`Message from ${fromNumber}: ${userMessage}`);
                 
                 try {
+                  // First check if user is in the middle of an active conversation flow
+                  if (userConversationStates[fromNumber]) {
+                    console.log(`User ${fromNumber} is in an active conversation flow: ${userConversationStates[fromNumber].flow}`);
+                    
+                    // Process the ongoing conversation flow
+                    const conversationState = userConversationStates[fromNumber];
+                    const actionResult = await continueEmailFlow(userMessage, fromNumber, conversationState);
+                    
+                    // Send response based on the conversation flow step
+                    let responseMessage = actionResult.message;
+                    
+                    await sendWhatsAppMessage(fromNumber, responseMessage);
+                    console.log('Conversation flow response sent successfully!');
+                  }
                   // Check if this is a command-based message (starts with /)
-                  if (userMessage && userMessage.startsWith('/')) {
+                  else if (userMessage && userMessage.startsWith('/')) {
                     console.log('Command detected:', userMessage);
                     
                     // Execute the command directly
@@ -704,6 +718,7 @@ app.listen(PORT, () => {
   console.log(`   - POST /test-webhook - Simulate WhatsApp webhook`);
   console.log(`   - GET /test-chat - Interactive chat UI for testing`);
 });
+
 
 
 
