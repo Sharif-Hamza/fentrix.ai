@@ -58,65 +58,87 @@ app.post('/webhook', async (req, res) => {
   try {
     console.log('Received webhook call:', JSON.stringify(req.body, null, 2));
     const body = req.body;
-    
+
     // Always return 200 immediately to acknowledge receipt
     res.status(200).send('EVENT_RECEIVED');
-    
+
     if (body.object === 'whatsapp_business_account') {
       console.log('Processing WhatsApp Business Account webhook');
-      
+
       if (!body.entry || body.entry.length === 0) {
         console.log('No entries in webhook, ignoring');
         return;
       }
-      
+
       for (const entry of body.entry) {
         if (!entry.changes || entry.changes.length === 0) {
           console.log('No changes in entry, ignoring');
           continue;
         }
-        
+
         for (const change of entry.changes) {
           if (change.field === 'messages') {
             console.log('Processing messages field in webhook');
-            
+
             const value = change.value;
             if (!value || !value.messages || value.messages.length === 0) {
               console.log('No messages in value, ignoring');
               continue;
             }
-            
+
             console.log(`Found ${value.messages.length} message(s) to process`);
-            
+
             for (const message of value.messages) {
               if (message.type === 'text') {
                 console.log('Processing text message:', message.text.body);
                 const userMessage = message.text.body;
                 const fromNumber = message.from;
-                
+
                 console.log(`Message from ${fromNumber}: ${userMessage}`);
-                
+
                 try {
                   // Get AI response
                   console.log('Getting Gemini response...');
                   const aiResponse = await getGeminiResponse(userMessage);
                   console.log('Gemini response:', JSON.stringify(aiResponse));
-                  
+
                   // Send response back via WhatsApp Business API
                   const replyText = aiResponse.reply || aiResponse;
                   console.log(`Sending reply to ${fromNumber}: ${replyText}`);
                   const sendResult = await sendWhatsAppMessage(fromNumber, replyText);
-                  
+
                   if (sendResult.success) {
                     console.log('Reply sent successfully!');
                   } else {
                     console.error('Failed to send reply:', sendResult.error);
                   }
-                  
+
                   // Handle actions/intents if you want to add integrations
                   if (aiResponse.action && aiResponse.action !== 'none') {
                     console.log(`Processing action: ${aiResponse.action}`, aiResponse.params);
-                    // Here you would add code to execute the action
+
+                    // === n8n EMAIL INTEGRATION START ===
+                    if (aiResponse.action === 'email.send') {
+                      try {
+                        const emailPayload = {
+                          to: aiResponse.params.to,
+                          subject: aiResponse.params.subject,
+                          body: aiResponse.params.body
+                        };
+                        const n8nResp = await axios.post(
+                          'https://areenxo.app.n8n.cloud/webhook/whatsapp-email',
+                          emailPayload
+                        );
+                        console.log('n8n email webhook result:', n8nResp.data);
+                        await sendWhatsAppMessage(fromNumber, 'Your email has been sent!');
+                      } catch (n8nErr) {
+                        console.error('Failed to trigger n8n email webhook:', n8nErr.message);
+                        await sendWhatsAppMessage(fromNumber, 'Sorry, I was unable to send the email.');
+                      }
+                    }
+                    // === n8n EMAIL INTEGRATION END ===
+
+                    // You can add more action integrations here!
                   }
                 } catch (messageError) {
                   console.error('Error processing message:', messageError);
@@ -142,7 +164,7 @@ async function getGeminiResponse(userMessage) {
   // If no API key is provided, return mock responses for testing
   if (!GEMINI_API_KEY) {
     console.log('Using mock response for message:', userMessage);
-    
+
     // Simple pattern matching for testing automation features
     if (userMessage.toLowerCase().includes('reminder')) {
       return {
@@ -214,7 +236,7 @@ async function getGeminiResponse(userMessage) {
       };
     }
   }
-  
+
   // If API key is provided, use the actual Gemini API
   try {
     const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Using the publicly available Gemini 2.0 Flash model
@@ -260,25 +282,15 @@ Respond ONLY in JSON:
 async function sendWhatsAppMessage(to, message) {
   if (!WHATSAPP_TOKEN || !WHATSAPP_PHONE_ID) {
     console.log('WhatsApp Business API not configured');
-    return;
+    return { success: false, error: 'Not configured' };
   }
-  
-  console.log('Attempting to send WhatsApp message to:', to);
-  console.log('Message content:', message);
-  
   try {
-    // Make sure phone number is in the correct format (should start with country code, no + symbol)
     const formattedNumber = to.startsWith('+') ? to.substring(1) : to;
-    
     const payload = {
       messaging_product: 'whatsapp',
       to: formattedNumber,
       text: { body: message }
     };
-    
-    console.log('Request payload:', JSON.stringify(payload));
-    console.log('Using Phone ID:', WHATSAPP_PHONE_ID);
-    
     const response = await axios.post(
       `https://graph.facebook.com/v17.0/${WHATSAPP_PHONE_ID}/messages`,
       payload,
@@ -289,28 +301,9 @@ async function sendWhatsAppMessage(to, message) {
         }
       }
     );
-    
-    console.log('Message sent successfully! Response:', JSON.stringify(response.data));
     return { success: true, data: response.data };
   } catch (error) {
-    console.error('Error sending WhatsApp message:');
-    if (error.response) {
-      console.error('Response error data:', JSON.stringify(error.response.data));
-      console.error('Response status:', error.response.status);
-      
-      // Handle specific WhatsApp error codes
-      const errorCode = error.response.data?.error?.code;
-      const errorMessage = error.response.data?.error?.message;
-      
-      if (errorCode === 131030) {
-        console.error('CRITICAL ERROR: The recipient phone number is not in the allowed list. You must add this number to your test recipients in the Meta Developer Dashboard.');
-      } else if (errorCode === 10) {
-        console.error('CRITICAL ERROR: Your app does not have the proper permissions or your access token is invalid/expired.');
-      }
-    } else {
-      console.error('Error details:', error.message);
-    }
-    
+    console.error('Error sending WhatsApp message:', error.response?.data || error.message);
     return { success: false, error: error.response?.data || error.message };
   }
 }
@@ -424,20 +417,20 @@ app.get('/test-chat', (req, res) => {
 app.post('/test-webhook', async (req, res) => {
   try {
     const { message, phone = '123456789' } = req.body;
-    
+
     if (!message) {
       return res.status(400).json({ error: 'Message is required' });
     }
-    
+
     // Get AI response
     const aiResponse = await getGeminiResponse(message);
-    
+
     // Log the response that would be sent to WhatsApp
     console.log('Simulated WhatsApp message to:', phone);
     console.log('Bot response:', aiResponse.reply);
     console.log('Action:', aiResponse.action);
     console.log('Params:', aiResponse.params);
-    
+
     res.json({
       success: true,
       response: aiResponse,
@@ -462,37 +455,37 @@ app.use((err, req, res, next) => {
 async function executeAction(action, params) {
   console.log(`Executing action: ${action}`);
   console.log('With params:', params);
-  
+
   // This is where you would implement the actual automation logic
   // For example, sending emails, creating calendar events, etc.
   switch(action) {
     case 'email.send':
       // Implement email sending functionality
       return { success: true, message: 'Email would be sent (not actually implemented yet)' };
-    
+
     case 'calendar.add':
       // Implement calendar event creation
       return { success: true, message: 'Calendar event would be created (not actually implemented yet)' };
-    
+
     case 'reminder.add':
       // Implement reminder creation
       return { success: true, message: 'Reminder would be set (not actually implemented yet)' };
-    
+
     case 'notes.create':
       // Implement note creation
       return { success: true, message: 'Note would be created (not actually implemented yet)' };
-    
+
     case 'weather.get':
       // Implement weather information retrieval
       return { success: true, message: 'Weather information would be retrieved (not actually implemented yet)' };
-    
+
     case 'search.web':
       // Implement web search
       return { success: true, message: 'Web search would be performed (not actually implemented yet)' };
-    
+
     case 'none':
       return { success: true, message: 'No action needed' };
-    
+
     default:
       return { success: false, message: `Unknown action: ${action}` };
   }
@@ -507,4 +500,79 @@ app.listen(PORT, () => {
   console.log(`   - POST /test-webhook - Simulate WhatsApp webhook`);
   console.log(`   - GET /test-chat - Interactive chat UI for testing`);
 });
+
+
+  // If API key is provided, use the actual Gemini API
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const prompt = `
+You are a helpful WhatsApp personal assistant powered by Gemini 2.0. Analyze the user's message and respond with:
+- a natural, conversational reply
+- a structured "action" and "params" for integrations and automations
+
+Available actions:
+1. calendar.add - Add calendar events (params: title, date, time, description)
+2. notes.create - Create notes (params: title, content, tags)
+3. reminder.add - Set reminders (params: text, date, time, priority)
+4. email.send - Send emails (params: to, subject, body)
+5. none - No action required
+
+User message: "${userMessage}"
+
+Respond ONLY in JSON:
+{
+  "reply": "Your conversational response to the user",
+  "action": "calendar.add|notes.create|reminder.add|email.send|none",
+  "params": { }
+}
+    `;
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    try {
+      const cleaned = response.text().replace(/```json\n?|```/g, '').trim();
+      return JSON.parse(cleaned);
+    } catch {
+      return { reply: response.text(), action: "none", params: {} };
+    }
+  } catch (error) {
+    console.error('Gemini AI error:', error);
+    return { reply: "Sorry, I couldn't process your message.", action: "none", params: {} };
+  }
+}
+
+// Send message via WhatsApp Business API
+async function sendWhatsAppMessage(to, message) {
+  if (!WHATSAPP_TOKEN || !WHATSAPP_PHONE_ID) {
+    console.log('WhatsApp Business API not configured');
+    return { success: false, error: 'Not configured' };
+  }
+  try {
+    const formattedNumber = to.startsWith('+') ? to.substring(1) : to;
+    const payload = {
+      messaging_product: 'whatsapp',
+      to: formattedNumber,
+      text: { body: message }
+    };
+    const response = await axios.post(
+      `https://graph.facebook.com/v17.0/${WHATSAPP_PHONE_ID}/messages`,
+      payload,
+      {
+        headers: {
+          'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    return { success: true, data: response.data };
+  } catch (error) {
+    console.error('Error sending WhatsApp message:', error.response?.data || error.message);
+    return { success: false, error: error.response?.data || error.message };
+  }
+}
+
+app.listen(PORT, () => {
+  console.log(`🚀 WhatsApp Gemini Bot running on port ${PORT}`);
+  console.log(`🤖 Gemini AI: 2.0 Flash Enabled`);
+});
+
 
